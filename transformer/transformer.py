@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
-# Our tasks generate new data every time, so don't need dropout
+# Dropout's zeroed since the task data I'm interested in is all infinite
 DROPOUT = .0
 LAYER_NORM_EPS = 1e-5
 
@@ -29,9 +29,7 @@ class PositionalEmbedding(nn.Module):
 
     def __init__(self, d_model):
         super().__init__()
-
-        self.d_model = d_model
-
+        
         inv_freq = 1 / (10000 ** (torch.arange(0.0, d_model, 2.0) / d_model))
         self.register_buffer('inv_freq', inv_freq)
 
@@ -46,7 +44,7 @@ class PositionwiseFF(nn.Module):
     def __init__(self, d_model, d_inner):
         super().__init__()
 
-        self.CoreNet = nn.Sequential(
+        self.core = nn.Sequential(
             nn.Linear(d_model, d_inner), nn.ReLU(inplace=True),
             nn.Dropout(DROPOUT),
             nn.Linear(d_inner, d_model),
@@ -55,7 +53,7 @@ class PositionwiseFF(nn.Module):
         self.layer_norm = nn.LayerNorm(d_model, eps=LAYER_NORM_EPS)
 
     def forward(self, inp):
-        h = self.CoreNet(inp)
+        h = self.core(inp)
         output = self.layer_norm(inp + h)
         return output
 
@@ -67,20 +65,22 @@ class MultiHeadAttn(nn.Module):
 
         self.n_head = n_head
         self.d_head = d_head
-
-        self.qkv_net = nn.Linear(d_model, 3*n_head*d_head, bias=False)
-
-        self.drop = nn.Dropout(DROPOUT)
-        self.o_net = nn.Linear(n_head*d_head, d_model, bias=False)
-
-        self.layer_norm = nn.LayerNorm(d_model, eps=LAYER_NORM_EPS)
-
         self.scale = 1/d_head**.5
 
-        self.r_r_bias = nn.Parameter(torch.zeros((self.n_head, self.d_head)))
-        self.r_w_bias = nn.Parameter(torch.zeros((self.n_head, self.d_head)))
-
+        self.qkv_net = nn.Linear(d_model, 3*n_head*d_head, bias=False)
         self.r_net = nn.Linear(d_model, self.n_head*self.d_head, bias=False)
+        self.o_net = nn.Linear(n_head*d_head, d_model, bias=False)
+
+        self.drop = nn.Dropout(DROPOUT)
+        self.layer_norm = nn.LayerNorm(d_model, eps=LAYER_NORM_EPS)
+
+        self.r_r_bias = nn.Parameter(torch.empty((self.n_head, self.d_head)))
+        self.r_w_bias = nn.Parameter(torch.empty((self.n_head, self.d_head)))
+
+        # Doesn't really matter how we initialize; LayerNorm will stop things from blowing up
+        torch.nn.init.normal_(self.r_r_bias)
+        torch.nn.init.normal_(self.r_w_bias)
+
 
     def _rel_shift(self, x):
         """Explanation: https://github.com/kimiyoung/transformer-xl/issues/8#issuecomment-454458852"""
@@ -124,6 +124,7 @@ class MultiHeadAttn(nn.Module):
         #### compute attention probability
         attn_score = (attn_score
                         .float()
+                        # -65k is a very, very small number for a 16-bit float
                         .masked_fill(mask.bool()[:, :, :, None], -65000)
                         .type_as(attn_score))
 
