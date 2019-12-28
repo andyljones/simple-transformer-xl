@@ -166,6 +166,7 @@ class TransformerXL(nn.Module):
         self.d_model = d_model
         self.n_layer = n_layer
         self.mem_len = mem_len
+        assert self.mem_len > 0, 'Memory length must be greater than zero, else the attention softmax will break'
 
         self.drop = nn.Dropout(DROPOUT)
         self.layers = nn.ModuleList([Decoder(n_head, d_model, d_head, d_inner) for _ in range(n_layer)])
